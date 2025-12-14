@@ -62,12 +62,15 @@ export default function FavoritesScreen() {
                   setIsLoading(true);
                   const favoritesData = await AsyncStorage.getItem('favorites');
                   if (favoritesData) {
-                    setFavorites(JSON.parse(favoritesData));
+                    const parsed = JSON.parse(favoritesData);
+                    setFavorites(Array.isArray(parsed) ? parsed : []);
                   } else {
                     setFavorites([]);
                   }
                 } catch (err) {
+                  console.error('Failed to load favorites:', err);
                   setError('Failed to load favorites. Please try again.');
+                  setFavorites([]);
                 } finally {
                   setIsLoading(false);
                 }

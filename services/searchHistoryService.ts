@@ -36,15 +36,16 @@ export class SearchHistoryService {
         return;
       }
 
-      const trimmedQuery = query.trim().toLowerCase();
+      const trimmedQuery = query.trim();
+      const queryLower = trimmedQuery.toLowerCase();
       const history = await this.getHistory();
 
-      // Remove duplicate entries
+      // Remove duplicate entries (case-insensitive comparison)
       const filteredHistory = history.filter(
-        (item) => item.query.toLowerCase() !== trimmedQuery
+        (item) => item.query.toLowerCase() !== queryLower
       );
 
-      // Add new entry at the beginning
+      // Add new entry at the beginning (preserve original casing)
       const newHistory: SearchHistoryItem[] = [
         { query: trimmedQuery, timestamp: Date.now() },
         ...filteredHistory,

@@ -32,16 +32,19 @@ const tmdb = axios.create({
 });
 
 // Add request interceptor for retry logic
-let retryCount = 0;
 const MAX_RETRIES = 2;
 
 interface RetryConfig extends InternalAxiosRequestConfig {
-  _retry?: boolean;
+  _retryCount?: number;
 }
 
 tmdb.interceptors.response.use(
   (response: AxiosResponse) => {
-    retryCount = 0;
+    // Clear retry count on successful response
+    const config = response.config as RetryConfig;
+    if (config) {
+      config._retryCount = 0;
+    }
     return response;
   },
   async (error: AxiosError) => {
@@ -51,20 +54,23 @@ tmdb.interceptors.response.use(
       return Promise.reject(error);
     }
     
+    // Initialize retry count if not exists
+    if (config._retryCount === undefined) {
+      config._retryCount = 0;
+    }
+    
     // Retry logic for network errors
     if (
       (!error.response || (error.response.status >= 500 && error.response.status < 600)) &&
-      retryCount < MAX_RETRIES &&
-      !config._retry
+      config._retryCount < MAX_RETRIES
     ) {
-      retryCount++;
-      config._retry = true;
+      config._retryCount++;
       
       // Wait before retrying (exponential backoff)
       await new Promise<void>((resolve) => {
         setTimeout(() => {
           resolve();
-        }, 1000 * retryCount);
+        }, 1000 * config._retryCount!);
       });
       
       return tmdb(config);

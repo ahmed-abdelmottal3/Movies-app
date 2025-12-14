@@ -1,24 +1,15 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Link } from "expo-router";
 import React, { memo, useEffect, useState } from "react";
 import {
-  Animated,
-  Image,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { IconSymbol } from "./ui/icon-symbol";
-
-interface Movie {
-  id: number;
-  title: string;
-  poster_path: string;
-  vote_average?: number;
-  release_date?: string;
-  [key: string]: any;
-}
+import { Movie, Genre } from "../types/movie";
+import { getGenres } from "../api/tmdb";
 
 interface MovieCardProps {
   movie: Movie;
@@ -26,48 +17,28 @@ interface MovieCardProps {
 }
 
 function MovieCard({ movie, isGridView = true }: MovieCardProps) {
-  const [isFavorite, setIsFavorite] = useState(false);
-  const [scaleAnim] = useState(new Animated.Value(1));
+  const [movieGenres, setMovieGenres] = useState<Genre[]>([]);
 
   useEffect(() => {
-    const checkIfFavorite = async () => {
-      const favorites = await AsyncStorage.getItem("favorites");
-      if (favorites) {
-        const favoriteMovies = JSON.parse(favorites);
-        setIsFavorite(
-          favoriteMovies.some((favMovie) => favMovie.id === movie.id)
-        );
+    const loadGenres = async () => {
+      if (movie.genres && movie.genres.length > 0) {
+        setMovieGenres(movie.genres);
+      } else if (movie.genre_ids && movie.genre_ids.length > 0) {
+        try {
+          const allGenres = await getGenres();
+          const genreIds = movie.genre_ids;
+          const matchedGenres = allGenres.filter((genre: Genre) =>
+            genreIds.includes(genre.id)
+          );
+          setMovieGenres(matchedGenres.slice(0, 2)); // Show max 2 genres
+        } catch (err) {
+          console.error("Failed to load genres:", err);
+        }
       }
     };
-    checkIfFavorite();
-  }, [movie.id]);
+    loadGenres();
+  }, [movie.genres, movie.genre_ids]);
 
-  const toggleFavorite = async () => {
-    Animated.sequence([
-      Animated.timing(scaleAnim, {
-        toValue: 0.8,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(scaleAnim, {
-        toValue: 1,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    const favorites = await AsyncStorage.getItem("favorites");
-    let favoriteMovies = favorites ? JSON.parse(favorites) : [];
-    if (isFavorite) {
-      favoriteMovies = favoriteMovies.filter(
-        (favMovie) => favMovie.id !== movie.id
-      );
-    } else {
-      favoriteMovies.push(movie);
-    }
-    await AsyncStorage.setItem("favorites", JSON.stringify(favoriteMovies));
-    setIsFavorite(!isFavorite);
-  };
 
   const formatDate = (dateString?: string) => {
     if (!dateString) return "";
@@ -95,10 +66,14 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
                     source={{
                       uri: movie.poster_path
                         ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
-                        : "https://via.placeholder.com/300x450/1a1a1a/ffffff?text=No+Image",
+                        : undefined,
                     }}
                     style={styles.poster}
-                    resizeMode="cover"
+                    contentFit="cover"
+                    transition={200}
+                    placeholder={{ blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4" }}
+                    placeholderContentFit="cover"
+                    cachePolicy="memory-disk"
                   />
 
                   {/* Gradient Overlay */}
@@ -134,28 +109,6 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
               </Link>
             )}
 
-            {/* Favorite Button */}
-            <Animated.View
-              style={[
-                styles.favoriteButtonContainer,
-                { transform: [{ scale: scaleAnim }] },
-              ]}
-            >
-              <Pressable
-                onPress={toggleFavorite}
-                style={[
-                  styles.favoriteButton,
-                  isFavorite && styles.favoriteButtonActive,
-                ]}
-                hitSlop={8}
-              >
-                <IconSymbol
-                  name={isFavorite ? "heart.fill" : "heart"}
-                  size={18}
-                  color={isFavorite ? "#fff" : "rgba(255,255,255,0.9)"}
-                />
-              </Pressable>
-            </Animated.View>
           </View>
 
           {/* Movie Info */}
@@ -165,14 +118,15 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
                 <Text style={styles.title} numberOfLines={2}>
                   {movie.title || "Untitled"}
                 </Text>
-                <View style={styles.genreTags}>
-                  <View style={styles.genreTag}>
-                    <Text style={styles.genreTagText}>Action</Text>
+                {movieGenres.length > 0 && (
+                  <View style={styles.genreTags}>
+                    {movieGenres.slice(0, 2).map((genre: Genre) => (
+                      <View key={genre.id} style={styles.genreTag}>
+                        <Text style={styles.genreTagText}>{genre.name}</Text>
+                      </View>
+                    ))}
                   </View>
-                  <View style={styles.genreTag}>
-                    <Text style={styles.genreTagText}>Adventure</Text>
-                  </View>
-                </View>
+                )}
               </Pressable>
             </Link>
           ) : (
@@ -180,14 +134,15 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
               <Text style={styles.title} numberOfLines={2}>
                 {movie.title || "Untitled"}
               </Text>
-              <View style={styles.genreTags}>
-                <View style={styles.genreTag}>
-                  <Text style={styles.genreTagText}>Action</Text>
+              {movieGenres.length > 0 && (
+                <View style={styles.genreTags}>
+                  {movieGenres.slice(0, 2).map((genre: Genre) => (
+                    <View key={genre.id} style={styles.genreTag}>
+                      <Text style={styles.genreTagText}>{genre.name}</Text>
+                    </View>
+                  ))}
                 </View>
-                <View style={styles.genreTag}>
-                  <Text style={styles.genreTagText}>Adventure</Text>
-                </View>
-              </View>
+              )}
             </View>
           )}
         </View>
@@ -205,11 +160,15 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
               <Image
                 source={{
                   uri: movie.poster_path
-                    ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
-                    : "https://via.placeholder.com/300x450/1a1a1a/ffffff?text=No+Image",
+                    ? `https://image.tmdb.org/t/p/w300${movie.poster_path}`
+                    : undefined,
                 }}
                 style={styles.posterList}
-                resizeMode="cover"
+                contentFit="cover"
+                transition={200}
+                placeholder={{ blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4" }}
+                placeholderContentFit="cover"
+                cachePolicy="memory-disk"
               />
 
               {/* Rating Badge */}
@@ -237,14 +196,15 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
                 {formatDate(movie.release_date)}
               </Text>
 
-              <View style={styles.genreTagsList}>
-                <View style={styles.genreTagList}>
-                  <Text style={styles.genreTagTextList}>Action</Text>
+              {movieGenres.length > 0 && (
+                <View style={styles.genreTagsList}>
+                  {movieGenres.slice(0, 2).map((genre: Genre) => (
+                    <View key={genre.id} style={styles.genreTagList}>
+                      <Text style={styles.genreTagTextList}>{genre.name}</Text>
+                    </View>
+                  ))}
                 </View>
-                <View style={styles.genreTagList}>
-                  <Text style={styles.genreTagTextList}>Adventure</Text>
-                </View>
-              </View>
+              )}
             </View>
           </Pressable>
         </Link>
@@ -254,11 +214,15 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
             <Image
               source={{
                 uri: movie.poster_path
-                  ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
-                  : "https://via.placeholder.com/300x450/1a1a1a/ffffff?text=No+Image",
+                  ? `https://image.tmdb.org/t/p/w300${movie.poster_path}`
+                  : undefined,
               }}
               style={styles.posterList}
-              resizeMode="cover"
+              contentFit="cover"
+              transition={200}
+              placeholder={{ blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4" }}
+              placeholderContentFit="cover"
+              cachePolicy="memory-disk"
             />
             {movie.vote_average !== undefined &&
               movie.vote_average !== null && (
@@ -284,34 +248,19 @@ function MovieCard({ movie, isGridView = true }: MovieCardProps) {
               {formatDate(movie.release_date)}
             </Text>
 
-            <View style={styles.genreTagsList}>
-              <View style={styles.genreTagList}>
-                <Text style={styles.genreTagTextList}>Action</Text>
+            {movieGenres.length > 0 && (
+              <View style={styles.genreTagsList}>
+                {movieGenres.slice(0, 2).map((genre: Genre) => (
+                  <View key={genre.id} style={styles.genreTagList}>
+                    <Text style={styles.genreTagTextList}>{genre.name}</Text>
+                  </View>
+                ))}
               </View>
-              <View style={styles.genreTagList}>
-                <Text style={styles.genreTagTextList}>Adventure</Text>
-              </View>
-            </View>
+            )}
           </View>
         </Pressable>
       )}
 
-      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-        <Pressable
-          onPress={toggleFavorite}
-          style={[
-            styles.favoriteButtonList,
-            isFavorite && styles.favoriteButtonListActive,
-          ]}
-          hitSlop={8}
-        >
-          <IconSymbol
-            name={isFavorite ? "heart.fill" : "heart"}
-            size={20}
-            color={isFavorite ? "#fff" : "#666"}
-          />
-        </Pressable>
-      </Animated.View>
     </View>
   );
 }
@@ -355,7 +304,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: "60%",
-    background: "linear-gradient(transparent, rgba(0,0,0,0.8))",
+    backgroundColor: "transparent",
   },
   ratingBadge: {
     position: "absolute",
@@ -392,24 +341,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 11,
     fontWeight: "600",
-  },
-  favoriteButtonContainer: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    zIndex: 10,
-  },
-  favoriteButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-    backdropFilter: "blur(10px)",
-  },
-  favoriteButtonActive: {
-    backgroundColor: "#FF4757",
   },
   cardInfo: {
     padding: 12,
@@ -524,24 +455,9 @@ const styles = StyleSheet.create({
     color: "#666",
     fontWeight: "500",
   },
-  favoriteButtonList: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#f8f9fa",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 16,
-    borderWidth: 1,
-    borderColor: "#e9ecef",
-  },
-  favoriteButtonListActive: {
-    backgroundColor: "#FF4757",
-    borderColor: "#FF4757",
-  },
 });
 
-export default memo(MovieCard, (prevProps, nextProps) => {
+export default memo(MovieCard, (prevProps: MovieCardProps, nextProps: MovieCardProps) => {
   return (
     prevProps.movie.id === nextProps.movie.id &&
     prevProps.isGridView === nextProps.isGridView &&

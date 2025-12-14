@@ -5,59 +5,97 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { getMovieDetails } from "../../api/tmdb";
+import { Image } from "expo-image";
+import { getMovieDetails, getMovieCredits, getSimilarMovies, getMovieVideos } from "../../api/tmdb";
 import { IconSymbol } from "../../components/ui/icon-symbol";
+import { Movie, MovieCredits, MovieVideo } from "../../types/movie";
+import { handleApiError, getErrorMessage } from "../../utils/errorHandler";
+import { useThemeColors } from "../../hooks/use-theme-colors";
+import * as WebBrowser from "expo-web-browser";
+import MovieCard from "../../components/MovieCard";
+import { FlatList } from "react-native";
 
 const { width, height } = Dimensions.get("window");
 
-interface Movie {
-  id: number;
-  title: string;
-  poster_path: string;
-  backdrop_path?: string;
-  overview: string;
-  release_date: string;
-  vote_average?: number;
-  runtime?: number;
-  genres?: { id: number; name: string }[];
-  [key: string]: any;
-}
-
 export default function MovieDetailsScreen() {
+  const colors = useThemeColors();
   const { id } = useLocalSearchParams();
   const [movie, setMovie] = useState<Movie | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
   const [scaleAnim] = useState(new Animated.Value(1));
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [credits, setCredits] = useState<MovieCredits | null>(null);
+  const [similarMovies, setSimilarMovies] = useState<Movie[]>([]);
+  const [trailerVideo, setTrailerVideo] = useState<MovieVideo | null>(null);
   const navigation = useNavigation();
 
   useEffect(() => {
-    if (id) {
-      getMovieDetails(Number(id)).then(setMovie);
-      checkIfFavorite();
-    }
+    const loadMovieDetails = async () => {
+      if (!id) return;
+      
+      try {
+        setIsLoading(true);
+        setError(null);
+        const movieId = Number(id);
+        
+        // Load all data in parallel
+        const [movieData, creditsData, similarData, videosData] = await Promise.all([
+          getMovieDetails(movieId),
+          getMovieCredits(movieId).catch(() => null),
+          getSimilarMovies(movieId, 1).catch(() => ({ results: [] })),
+          getMovieVideos(movieId).catch(() => ({ results: [] })),
+        ]);
+        
+        setMovie(movieData);
+        setCredits(creditsData);
+        setSimilarMovies(similarData.results || []);
+        
+        // Find trailer video
+        const trailer = videosData.results?.find(
+          (video: MovieVideo) => video.type === "Trailer" && video.site === "YouTube"
+        );
+        setTrailerVideo(trailer || null);
+        
+        await checkIfFavorite(movieData);
+      } catch (err) {
+        const appError = handleApiError(err);
+        setError(getErrorMessage(appError));
+        console.error("Failed to load movie details:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadMovieDetails();
   }, [id]);
 
   useEffect(() => {
     if (movie) {
-      checkIfFavorite();
+      checkIfFavorite(movie);
     }
   }, [movie]);
 
-  const checkIfFavorite = async () => {
-    if (!movie) return;
-    const favorites = await AsyncStorage.getItem("favorites");
-    if (favorites) {
-      const favoriteMovies = JSON.parse(favorites);
-      setIsFavorite(
-        favoriteMovies.some((favMovie: Movie) => favMovie.id === movie.id)
-      );
+  const checkIfFavorite = async (movieToCheck?: Movie) => {
+    const movieToUse = movieToCheck || movie;
+    if (!movieToUse) return;
+    
+    try {
+      const favorites = await AsyncStorage.getItem("favorites");
+      if (favorites) {
+        const favoriteMovies: Movie[] = JSON.parse(favorites);
+        setIsFavorite(
+          favoriteMovies.some((favMovie) => favMovie.id === movieToUse.id)
+        );
+      }
+    } catch (err) {
+      console.error("Failed to check favorite status:", err);
     }
   };
 
@@ -77,17 +115,21 @@ export default function MovieDetailsScreen() {
       }),
     ]).start();
 
-    const favorites = await AsyncStorage.getItem("favorites");
-    let favoriteMovies = favorites ? JSON.parse(favorites) : [];
-    if (isFavorite) {
-      favoriteMovies = favoriteMovies.filter(
-        (favMovie: Movie) => favMovie.id !== movie.id
-      );
-    } else {
-      favoriteMovies.push(movie);
+    try {
+      const favorites = await AsyncStorage.getItem("favorites");
+      let favoriteMovies: Movie[] = favorites ? JSON.parse(favorites) : [];
+      if (isFavorite) {
+        favoriteMovies = favoriteMovies.filter(
+          (favMovie) => favMovie.id !== movie.id
+        );
+      } else {
+        favoriteMovies.push(movie);
+      }
+      await AsyncStorage.setItem("favorites", JSON.stringify(favoriteMovies));
+      setIsFavorite(!isFavorite);
+    } catch (err) {
+      console.error("Failed to toggle favorite:", err);
     }
-    await AsyncStorage.setItem("favorites", JSON.stringify(favoriteMovies));
-    setIsFavorite(!isFavorite);
   };
 
   useLayoutEffect(() => {
@@ -128,7 +170,7 @@ export default function MovieDetailsScreen() {
     return `${hours}h ${mins}m`;
   };
 
-  if (!movie) {
+  if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#3b82f6" />
@@ -137,23 +179,60 @@ export default function MovieDetailsScreen() {
     );
   }
 
+  if (error || !movie) {
+    return (
+      <View style={styles.errorContainer}>
+        <IconSymbol name="exclamationmark.triangle.fill" size={64} color="#ef4444" />
+        <Text style={styles.errorTitle}>Failed to load movie</Text>
+        <Text style={styles.errorText}>{error || "Movie not found"}</Text>
+        <Pressable
+          style={styles.retryButton}
+          onPress={() => {
+            setError(null);
+            const loadMovieDetails = async () => {
+              if (!id) return;
+              try {
+                setIsLoading(true);
+                const movieData = await getMovieDetails(Number(id));
+                setMovie(movieData);
+                await checkIfFavorite(movieData);
+              } catch (err) {
+                const appError = handleApiError(err);
+                setError(getErrorMessage(appError));
+              } finally {
+                setIsLoading(false);
+              }
+            };
+            loadMovieDetails();
+          }}
+        >
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.scrollContent}
     >
       {/* Hero Section */}
-      <View style={styles.heroSection}>
+      <View style={[styles.heroSection, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
         <View style={styles.posterContainer}>
           <Image
             source={{
               uri: movie.poster_path
                 ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
-                : "https://via.placeholder.com/300x450/f8fafc/64748b?text=No+Image",
+                : undefined,
             }}
             style={styles.poster}
-            resizeMode="cover"
+            contentFit="cover"
+            transition={200}
+            placeholder={{ blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4" }}
+            placeholderContentFit="cover"
+            cachePolicy="memory-disk"
           />
 
           {/* Rating Badge */}
@@ -174,14 +253,14 @@ export default function MovieDetailsScreen() {
 
         {/* Title and Actions */}
         <View style={styles.titleSection}>
-          <Text style={styles.title}>{movie.title}</Text>
+          <Text style={[styles.title, { color: colors.text }]}>{movie.title}</Text>
 
           {/* Meta Info */}
           <View style={styles.metaContainer}>
             {movie.release_date && (
               <View style={styles.metaItem}>
-                <IconSymbol name="calendar" size={16} color="#64748b" />
-                <Text style={styles.metaText}>
+                <IconSymbol name="calendar" size={16} color={colors.icon} />
+                <Text style={[styles.metaText, { color: colors.icon }]}>
                   {formatDate(movie.release_date)}
                 </Text>
               </View>
@@ -189,8 +268,8 @@ export default function MovieDetailsScreen() {
 
             {movie.runtime && (
               <View style={styles.metaItem}>
-                <IconSymbol name="clock" size={16} color="#64748b" />
-                <Text style={styles.metaText}>
+                <IconSymbol name="clock" size={16} color={colors.icon} />
+                <Text style={[styles.metaText, { color: colors.icon }]}>
                   {formatRuntime(movie.runtime)}
                 </Text>
               </View>
@@ -199,9 +278,20 @@ export default function MovieDetailsScreen() {
 
           {/* Action Buttons */}
           <View style={styles.actionButtons}>
-            <Pressable style={styles.watchButton}>
+            <Pressable
+              style={styles.watchButton}
+              onPress={async () => {
+                if (trailerVideo?.key) {
+                  const url = `https://www.youtube.com/watch?v=${trailerVideo.key}`;
+                  await WebBrowser.openBrowserAsync(url);
+                }
+              }}
+              disabled={!trailerVideo}
+            >
               <IconSymbol name="play.fill" size={20} color="#fff" />
-              <Text style={styles.watchButtonText}>Watch Trailer</Text>
+              <Text style={styles.watchButtonText}>
+                {trailerVideo ? "Watch Trailer" : "No Trailer"}
+              </Text>
             </Pressable>
 
             <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
@@ -225,73 +315,79 @@ export default function MovieDetailsScreen() {
 
       {/* Genres */}
       {movie.genres && movie.genres.length > 0 && (
-        <View style={styles.genresContainer}>
+        <View style={[styles.genresContainer, { borderBottomColor: colors.border }]}>
           {movie.genres.map((genre, index) => (
             <View
               key={genre.id}
-              style={[styles.genreTag, index === 0 && styles.genreTagFirst]}
+              style={[
+                styles.genreTag,
+                {
+                  backgroundColor: index === 0 ? colors.tint + '20' : colors.inputBackground,
+                  borderColor: index === 0 ? colors.tint : colors.border,
+                },
+              ]}
             >
-              <Text style={styles.genreText}>{genre.name}</Text>
+              <Text style={[styles.genreText, { color: index === 0 ? colors.tint : colors.text }]}>{genre.name}</Text>
             </View>
           ))}
         </View>
       )}
 
       {/* Overview Section */}
-      <View style={styles.overviewSection}>
-        <Text style={styles.sectionTitle}>Storyline</Text>
-        <Text style={styles.overview}>
+      <View style={[styles.overviewSection, { borderBottomColor: colors.border }]}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Storyline</Text>
+        <Text style={[styles.overview, { color: colors.icon }]}>
           {movie.overview || "No overview available."}
         </Text>
       </View>
 
       {/* Details Grid */}
-      <View style={styles.detailsGrid}>
-        <View style={styles.detailCard}>
+      <View style={[styles.detailsGrid, { borderBottomColor: colors.border }]}>
+        <View style={[styles.detailCard, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
           <View style={[styles.detailIcon, { backgroundColor: "#fef3c7" }]}>
             <IconSymbol name="star.fill" size={20} color="#f59e0b" />
           </View>
-          <Text style={styles.detailValue}>
+          <Text style={[styles.detailValue, { color: colors.text }]}>
             {movie.vote_average ? movie.vote_average.toFixed(1) : "N/A"}
           </Text>
-          <Text style={styles.detailLabel}>Rating</Text>
+          <Text style={[styles.detailLabel, { color: colors.icon }]}>Rating</Text>
         </View>
 
-        <View style={styles.detailCard}>
+        <View style={[styles.detailCard, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
           <View style={[styles.detailIcon, { backgroundColor: "#d1fae5" }]}>
             <IconSymbol name="clock" size={20} color="#10b981" />
           </View>
-          <Text style={styles.detailValue}>
+          <Text style={[styles.detailValue, { color: colors.text }]}>
             {movie.runtime ? formatRuntime(movie.runtime) : "N/A"}
           </Text>
-          <Text style={styles.detailLabel}>Duration</Text>
+          <Text style={[styles.detailLabel, { color: colors.icon }]}>Duration</Text>
         </View>
 
-        <View style={styles.detailCard}>
+        <View style={[styles.detailCard, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
           <View style={[styles.detailIcon, { backgroundColor: "#fee2e2" }]}>
             <IconSymbol name="calendar" size={20} color="#ef4444" />
           </View>
-          <Text style={styles.detailValue}>
+          <Text style={[styles.detailValue, { color: colors.text }]}>
             {movie.release_date
               ? new Date(movie.release_date).getFullYear()
               : "N/A"}
           </Text>
-          <Text style={styles.detailLabel}>Year</Text>
+          <Text style={[styles.detailLabel, { color: colors.icon }]}>Year</Text>
         </View>
       </View>
 
       {/* Additional Info */}
-      <View style={styles.infoSection}>
-        <Text style={styles.sectionTitle}>Movie Details</Text>
+      <View style={[styles.infoSection, { borderBottomColor: colors.border }]}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Movie Details</Text>
 
-        <View style={styles.infoList}>
+        <View style={[styles.infoList, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
           {movie.release_date && (
             <View style={styles.infoItem}>
               <View style={styles.infoLabelContainer}>
-                <IconSymbol name="calendar" size={16} color="#64748b" />
-                <Text style={styles.infoLabel}>Release Date</Text>
+                <IconSymbol name="calendar" size={16} color={colors.icon} />
+                <Text style={[styles.infoLabel, { color: colors.icon }]}>Release Date</Text>
               </View>
-              <Text style={styles.infoValue}>
+              <Text style={[styles.infoValue, { color: colors.text }]}>
                 {formatDate(movie.release_date)}
               </Text>
             </View>
@@ -300,10 +396,10 @@ export default function MovieDetailsScreen() {
           {movie.runtime && (
             <View style={styles.infoItem}>
               <View style={styles.infoLabelContainer}>
-                <IconSymbol name="clock" size={16} color="#64748b" />
-                <Text style={styles.infoLabel}>Runtime</Text>
+                <IconSymbol name="clock" size={16} color={colors.icon} />
+                <Text style={[styles.infoLabel, { color: colors.icon }]}>Runtime</Text>
               </View>
-              <Text style={styles.infoValue}>
+              <Text style={[styles.infoValue, { color: colors.text }]}>
                 {formatRuntime(movie.runtime)}
               </Text>
             </View>
@@ -312,16 +408,69 @@ export default function MovieDetailsScreen() {
           {movie.vote_average && (
             <View style={styles.infoItem}>
               <View style={styles.infoLabelContainer}>
-                <IconSymbol name="star.fill" size={16} color="#64748b" />
-                <Text style={styles.infoLabel}>Rating</Text>
+                <IconSymbol name="star.fill" size={16} color={colors.icon} />
+                <Text style={[styles.infoLabel, { color: colors.icon }]}>Rating</Text>
               </View>
-              <Text style={styles.infoValue}>
+              <Text style={[styles.infoValue, { color: colors.text }]}>
                 {movie.vote_average.toFixed(1)} / 10
               </Text>
             </View>
           )}
         </View>
       </View>
+
+      {/* Cast Section */}
+      {credits && credits.cast && credits.cast.length > 0 && (
+        <View style={[styles.castSection, { borderBottomColor: colors.border }]}>
+          <Text style={[styles.sectionTitle, { color: colors.text, paddingHorizontal: 20 }]}>Cast</Text>
+          <FlatList
+            data={credits.cast.slice(0, 10)}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.castList}
+            renderItem={({ item }) => (
+              <View style={[styles.castItem, { backgroundColor: colors.inputBackground }]}>
+                <Image
+                  source={{
+                    uri: item.profile_path
+                      ? `https://image.tmdb.org/t/p/w185${item.profile_path}`
+                      : undefined,
+                  }}
+                  style={styles.castImage}
+                  contentFit="cover"
+                  transition={200}
+                  placeholder={{ blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4" }}
+                  cachePolicy="memory-disk"
+                />
+                <Text style={[styles.castName, { color: colors.text }]} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={[styles.castCharacter, { color: colors.icon }]} numberOfLines={1}>
+                  {item.character}
+                </Text>
+              </View>
+            )}
+            keyExtractor={(item) => item.id.toString()}
+          />
+        </View>
+      )}
+
+      {/* Similar Movies Section */}
+      {similarMovies.length > 0 && (
+        <View style={styles.similarSection}>
+          <Text style={[styles.sectionTitle, { color: colors.text, paddingHorizontal: 20 }]}>
+            Similar Movies
+          </Text>
+          <FlatList
+            data={similarMovies.slice(0, 10)}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.similarList}
+            renderItem={({ item }) => <MovieCard movie={item} isGridView={false} />}
+            keyExtractor={(item) => item.id.toString()}
+          />
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -329,18 +478,15 @@ export default function MovieDetailsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
   },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#fff",
   },
   loadingText: {
     marginTop: 12,
     fontSize: 16,
-    color: "#64748b",
   },
   scrollContent: {
     paddingBottom: 40,
@@ -350,9 +496,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 24,
-    backgroundColor: "#f8fafc",
     borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
   },
   posterContainer: {
     position: "relative",
@@ -392,7 +536,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: "800",
-    color: "#1e293b",
     marginBottom: 12,
     lineHeight: 30,
   },
@@ -408,7 +551,6 @@ const styles = StyleSheet.create({
   },
   metaText: {
     fontSize: 14,
-    color: "#64748b",
     fontWeight: "500",
   },
   actionButtons: {
@@ -463,40 +605,29 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
     gap: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
   },
   genreTag: {
-    backgroundColor: "#f8fafc",
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  genreTagFirst: {
-    backgroundColor: "#eff6ff",
-    borderColor: "#3b82f6",
   },
   genreText: {
     fontSize: 13,
-    color: "#475569",
     fontWeight: "600",
   },
   overviewSection: {
     paddingHorizontal: 20,
     paddingVertical: 24,
     borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#1e293b",
     marginBottom: 12,
   },
   overview: {
     fontSize: 16,
-    color: "#475569",
     lineHeight: 24,
     fontWeight: "400",
   },
@@ -506,16 +637,13 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
   },
   detailCard: {
     flex: 1,
-    backgroundColor: "#f8fafc",
     borderRadius: 16,
     padding: 16,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#f1f5f9",
   },
   detailIcon: {
     width: 40,
@@ -528,12 +656,10 @@ const styles = StyleSheet.create({
   detailValue: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#1e293b",
     marginBottom: 4,
   },
   detailLabel: {
     fontSize: 12,
-    color: "#64748b",
     fontWeight: "500",
     textTransform: "uppercase",
   },
@@ -541,14 +667,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 24,
     borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
   },
   infoList: {
-    backgroundColor: "#f8fafc",
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: "#f1f5f9",
   },
   infoItem: {
     flexDirection: "row",
@@ -563,31 +686,79 @@ const styles = StyleSheet.create({
   },
   infoLabel: {
     fontSize: 15,
-    color: "#64748b",
     fontWeight: "500",
   },
   infoValue: {
     fontSize: 15,
-    color: "#1e293b",
     fontWeight: "600",
   },
   castSection: {
-    paddingHorizontal: 20,
     paddingVertical: 24,
+    borderBottomWidth: 1,
   },
-  castPlaceholder: {
-    backgroundColor: "#f8fafc",
-    borderRadius: 16,
-    padding: 40,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#f1f5f9",
+  castList: {
+    paddingHorizontal: 20,
     gap: 12,
   },
-  placeholderText: {
-    fontSize: 14,
-    color: "#94a3b8",
-    fontWeight: "500",
+  castItem: {
+    width: 120,
+    borderRadius: 12,
+    padding: 8,
+    alignItems: "center",
+    marginRight: 8,
+  },
+  castImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    marginBottom: 8,
+  },
+  castName: {
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
+    marginBottom: 4,
+  },
+  castCharacter: {
+    fontSize: 11,
+    textAlign: "center",
+  },
+  similarSection: {
+    paddingVertical: 24,
+  },
+  similarList: {
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 40,
+  },
+  errorTitle: {
+    fontSize: 24,
+    fontWeight: "700",
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  errorText: {
+    fontSize: 16,
+    textAlign: "center",
+    marginBottom: 24,
+    lineHeight: 24,
+  },
+  retryButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    minWidth: 120,
+  },
+  retryButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
     textAlign: "center",
   },
 });

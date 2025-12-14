@@ -19,25 +19,14 @@ import MovieCard from "../../components/MovieCard";
 import { IconSymbol } from "../../components/ui/icon-symbol";
 import { Movie, Genre, MovieResponse } from "../../types/movie";
 import { handleApiError, getErrorMessage } from "../../utils/errorHandler";
-
-// A simple debounce hook
-function useDebounce<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
-}
+import { MovieListSkeleton } from "../../components/LoadingSkeleton";
+import { useDebounce } from "../../hooks/useDebounce";
+import { useThemeColors } from "../../hooks/use-theme-colors";
+import { SearchHistoryService } from "../../services/searchHistoryService";
+import { useFocusEffect } from "@react-navigation/native";
 
 export default function MoviesScreen() {
+  const colors = useThemeColors();
   const [movies, setMovies] = useState<Movie[]>([]);
   const [genres, setGenres] = useState<Genre[]>([]);
   const [query, setQuery] = useState("");
@@ -46,7 +35,13 @@ export default function MoviesScreen() {
   );
   const debouncedQuery = useDebounce(query, 500);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     const loadGenres = async () => {
@@ -62,10 +57,22 @@ export default function MoviesScreen() {
     loadGenres();
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      const loadSearchHistory = async () => {
+        const recent = await SearchHistoryService.getRecentSearches(5);
+        setSearchHistory(recent);
+      };
+      loadSearchHistory();
+    }, [])
+  );
+
   // Load movies when search/genre changes
   useEffect(() => {
     setIsLoading(true);
     setError(null);
+    setCurrentPage(1);
+    setHasMore(true);
 
     const loadMovies = async () => {
       try {
@@ -80,6 +87,16 @@ export default function MoviesScreen() {
         }
         
         setMovies(data.results || []);
+        setTotalPages(data.total_pages || 1);
+        setHasMore((data.total_pages || 1) > 1);
+        
+        // Add to search history if it's a search query
+        if (debouncedQuery.length > 2) {
+          await SearchHistoryService.addToHistory(debouncedQuery);
+          const recent = await SearchHistoryService.getRecentSearches(5);
+          setSearchHistory(recent);
+        }
+        setShowHistory(false);
       } catch (err) {
         const appError = handleApiError(err);
         const errorMessage = getErrorMessage(appError);
@@ -94,6 +111,41 @@ export default function MoviesScreen() {
     loadMovies();
   }, [debouncedQuery, selectedGenre]);
 
+  const loadMoreMovies = async () => {
+    if (isLoadingMore || !hasMore || currentPage >= totalPages) {
+      return;
+    }
+
+    setIsLoadingMore(true);
+    const nextPage = currentPage + 1;
+
+    try {
+      let data: MovieResponse;
+      
+      if (debouncedQuery.length > 2) {
+        data = await searchMovies(debouncedQuery, nextPage);
+      } else if (selectedGenre) {
+        data = await getMoviesByGenre(selectedGenre, nextPage);
+      } else {
+        data = await getPopularMovies(nextPage);
+      }
+
+      setMovies((prev) => [...prev, ...(data.results || [])]);
+      setCurrentPage(nextPage);
+      setHasMore(nextPage < (data.total_pages || 1));
+    } catch (err) {
+      console.error("Failed to load more movies:", err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  const handleEndReached = () => {
+    if (!isLoadingMore && hasMore) {
+      loadMoreMovies();
+    }
+  };
+
   // Memoize the renderItem function
   const renderItem = useCallback(
     ({ item }: { item: Movie }) => <MovieCard movie={item} isGridView={true} />,
@@ -106,43 +158,102 @@ export default function MoviesScreen() {
   }, []);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header Section */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Discover Movies</Text>
-        <Text style={styles.headerSubtitle}>Find your next favorite film</Text>
+      <View style={[styles.header, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Discover Movies</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.icon }]}>Find your next favorite film</Text>
       </View>
 
       {/* Search Section */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchContainer}>
+      <View style={[styles.searchSection, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
+        <View style={[styles.searchContainer, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
           <IconSymbol
             name="magnifyingglass"
             size={22}
-            color="#666"
+            color={colors.icon}
             style={styles.searchIcon}
           />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: colors.text }]}
             placeholder="Search movies..."
-            placeholderTextColor="#999"
+            placeholderTextColor={colors.placeholder}
             value={query}
             onChangeText={(text) => {
               setQuery(text);
               setSelectedGenre(undefined);
+              setShowHistory(text.length === 0 && searchHistory.length > 0);
+            }}
+            onFocus={() => {
+              if (query.length === 0 && searchHistory.length > 0) {
+                setShowHistory(true);
+              }
+            }}
+            onBlur={() => {
+              // Delay to allow press events on history items
+              setTimeout(() => setShowHistory(false), 200);
             }}
           />
           {query.length > 0 && (
-            <Pressable onPress={() => setQuery("")} style={styles.clearButton}>
-              <IconSymbol name="xmark" size={16} color="#666" />
+            <Pressable onPress={() => {
+              setQuery("");
+              setShowHistory(searchHistory.length > 0);
+            }} style={styles.clearButton}>
+              <IconSymbol name="xmark" size={16} color={colors.icon} />
             </Pressable>
           )}
         </View>
+        
+        {/* Search History */}
+        {showHistory && searchHistory.length > 0 && (
+          <View style={[styles.historyContainer, { backgroundColor: colors.cardBackground, borderColor: colors.border }]}>
+            <View style={styles.historyHeader}>
+              <Text style={[styles.historyTitle, { color: colors.text }]}>Recent Searches</Text>
+              <Pressable
+                onPress={async () => {
+                  await SearchHistoryService.clearHistory();
+                  setSearchHistory([]);
+                  setShowHistory(false);
+                }}
+              >
+                <Text style={[styles.clearHistoryText, { color: colors.tint }]}>Clear</Text>
+              </Pressable>
+            </View>
+            {searchHistory.map((item, index) => (
+              <Pressable
+                key={index}
+                style={[styles.historyItem, { borderBottomColor: colors.border }]}
+                onPress={async () => {
+                  setQuery(item);
+                  setShowHistory(false);
+                  await SearchHistoryService.addToHistory(item);
+                }}
+              >
+                <IconSymbol name="clock" size={16} color={colors.icon} />
+                <Text style={[styles.historyText, { color: colors.text }]}>{item}</Text>
+                <Pressable
+                  onPress={async (e) => {
+                    e.stopPropagation();
+                    await SearchHistoryService.removeFromHistory(item);
+                    const recent = await SearchHistoryService.getRecentSearches(5);
+                    setSearchHistory(recent);
+                    if (recent.length === 0) {
+                      setShowHistory(false);
+                    }
+                  }}
+                  style={styles.removeHistoryButton}
+                >
+                  <IconSymbol name="xmark" size={12} color={colors.icon} />
+                </Pressable>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* Category Section */}
-      <View style={styles.categorySection}>
-        <Text style={styles.categoryTitle}>Categories</Text>
+      <View style={[styles.categorySection, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
+        <Text style={[styles.categoryTitle, { color: colors.text }]}>Categories</Text>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -151,6 +262,7 @@ export default function MoviesScreen() {
           <Pressable
             style={[
               styles.categoryChip,
+              { backgroundColor: !selectedGenre ? colors.tint : colors.inputBackground, borderColor: colors.border },
               !selectedGenre && styles.categoryChipActive,
             ]}
             onPress={() => {
@@ -161,6 +273,7 @@ export default function MoviesScreen() {
             <Text
               style={[
                 styles.categoryText,
+                { color: !selectedGenre ? '#fff' : colors.icon },
                 !selectedGenre && styles.categoryTextActive,
               ]}
             >
@@ -172,6 +285,7 @@ export default function MoviesScreen() {
               key={genre.id}
               style={[
                 styles.categoryChip,
+                { backgroundColor: selectedGenre === genre.id ? colors.tint : colors.inputBackground, borderColor: colors.border },
                 selectedGenre === genre.id && styles.categoryChipActive,
               ]}
               onPress={() => {
@@ -182,6 +296,7 @@ export default function MoviesScreen() {
               <Text
                 style={[
                   styles.categoryText,
+                  { color: selectedGenre === genre.id ? '#fff' : colors.icon },
                   selectedGenre === genre.id && styles.categoryTextActive,
                 ]}
               >
@@ -210,9 +325,7 @@ export default function MoviesScreen() {
           </Pressable>
         </View>
       ) : isLoading ? (
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading movies...</Text>
-        </View>
+        <MovieListSkeleton count={6} />
       ) : movies.length === 0 ? (
         <View style={styles.emptyContainer}>
           <IconSymbol name="film.fill" size={64} color="#ccc" />
@@ -235,6 +348,15 @@ export default function MoviesScreen() {
           updateCellsBatchingPeriod={50}
           initialNumToRender={10}
           windowSize={10}
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            isLoadingMore ? (
+              <View style={styles.footerLoader}>
+                <Text style={styles.footerText}>Loading more...</Text>
+              </View>
+            ) : null
+          }
         />
       )}
     </View>
@@ -244,42 +366,33 @@ export default function MoviesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
   },
   header: {
     paddingTop: 60,
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#e0e0e0",
   },
   headerTitle: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "#1a1a1a",
     marginBottom: 4,
   },
   headerSubtitle: {
     fontSize: 16,
-    color: "#666",
   },
   searchSection: {
     paddingHorizontal: 20,
     paddingVertical: 16,
-    backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#e0e0e0",
   },
   searchContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#f5f5f5",
     borderRadius: 12,
     paddingHorizontal: 16,
     height: 50,
     borderWidth: 1,
-    borderColor: "#e0e0e0",
   },
   searchIcon: {
     marginRight: 12,
@@ -287,22 +400,18 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     height: 50,
-    color: "#1a1a1a",
     fontSize: 16,
   },
   clearButton: {
     padding: 4,
   },
   categorySection: {
-    backgroundColor: "#fff",
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "#e0e0e0",
   },
   categoryTitle: {
     fontSize: 18,
     fontWeight: "600",
-    color: "#1a1a1a",
     marginBottom: 12,
     paddingHorizontal: 20,
   },
@@ -313,20 +422,16 @@ const styles = StyleSheet.create({
   categoryChip: {
     paddingHorizontal: 20,
     paddingVertical: 10,
-    backgroundColor: "#f8f8f8",
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#e0e0e0",
     marginRight: 8,
   },
   categoryChipActive: {
-    backgroundColor: "#1a1a1a",
-    borderColor: "#1a1a1a",
+    // Active state handled dynamically
   },
   categoryText: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#666",
   },
   categoryTextActive: {
     color: "#fff",
@@ -346,7 +451,6 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 16,
-    color: "#666",
     marginTop: 12,
   },
   emptyContainer: {
@@ -358,12 +462,10 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 20,
     fontWeight: "600",
-    color: "#666",
     marginTop: 16,
   },
   emptySubtext: {
     fontSize: 14,
-    color: "#999",
     marginTop: 8,
   },
   errorContainer: {
@@ -374,7 +476,6 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 16,
-    color: "#ef4444",
     marginTop: 16,
     textAlign: "center",
     marginBottom: 20,
@@ -389,5 +490,50 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  footerLoader: {
+    paddingVertical: 20,
+    alignItems: "center",
+  },
+  footerText: {
+    fontSize: 14,
+  },
+  historyContainer: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: 'hidden',
+    maxHeight: 200,
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  historyTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  clearHistoryText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  historyItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+    borderBottomWidth: 1,
+  },
+  historyText: {
+    flex: 1,
+    fontSize: 15,
+  },
+  removeHistoryButton: {
+    padding: 4,
   },
 });

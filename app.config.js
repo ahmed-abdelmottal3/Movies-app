@@ -1,6 +1,6 @@
 export default {
   expo: {
-    name: "movie-app",
+    name: "Movie App",
     slug: "movie-app",
     version: "1.0.0",
     orientation: "portrait",
@@ -8,10 +8,19 @@ export default {
     scheme: "movieapp",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
+    description: "Discover and explore your favorite movies with detailed information, cast, and trailers",
+    privacy: "public",
     ios: {
       supportsTablet: true,
+      bundleIdentifier: "com.movieapp.app",
+      buildNumber: "1",
+      infoPlist: {
+        NSPhotoLibraryUsageDescription: "This app needs access to your photo library to save movie posters.",
+      },
     },
     android: {
+      package: "com.movieapp.app",
+      versionCode: 1,
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -20,6 +29,7 @@ export default {
       },
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
+      permissions: [],
     },
     web: {
       output: "static",

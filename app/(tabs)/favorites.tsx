@@ -5,18 +5,34 @@ import { FlatList, StyleSheet, Text, View, Pressable } from 'react-native';
 import MovieCard from '../../components/MovieCard';
 import { IconSymbol } from '../../components/ui/icon-symbol';
 import { Movie } from '../../types/movie';
+import { MovieListSkeleton } from '../../components/LoadingSkeleton';
+import { useThemeColors } from '../../hooks/use-theme-colors';
 
 export default function FavoritesScreen() {
+  const colors = useThemeColors();
   const [favorites, setFavorites] = useState<Movie[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       const getFavorites = async () => {
-        const favoritesData = await AsyncStorage.getItem('favorites');
-        if (favoritesData) {
-          setFavorites(JSON.parse(favoritesData));
-        } else {
+        try {
+          setIsLoading(true);
+          setError(null);
+          const favoritesData = await AsyncStorage.getItem('favorites');
+          if (favoritesData) {
+            const parsed = JSON.parse(favoritesData);
+            setFavorites(Array.isArray(parsed) ? parsed : []);
+          } else {
+            setFavorites([]);
+          }
+        } catch (err) {
+          console.error('Failed to load favorites:', err);
+          setError('Failed to load favorites. Please try again.');
           setFavorites([]);
+        } finally {
+          setIsLoading(false);
         }
       };
       getFavorites();
@@ -24,16 +40,47 @@ export default function FavoritesScreen() {
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header Section */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>My Favorites</Text>
-        <Text style={styles.headerSubtitle}>
+      <View style={[styles.header, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>My Favorites</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.icon }]}>
           {favorites.length} {favorites.length === 1 ? 'movie' : 'movies'} saved
         </Text>
       </View>
 
-      {favorites.length === 0 ? (
+      {error ? (
+        <View style={styles.errorContainer}>
+          <IconSymbol name="exclamationmark.triangle.fill" size={64} color="#ef4444" />
+          <Text style={styles.errorText}>{error}</Text>
+          <Pressable
+            style={styles.retryButton}
+            onPress={() => {
+              setError(null);
+              const getFavorites = async () => {
+                try {
+                  setIsLoading(true);
+                  const favoritesData = await AsyncStorage.getItem('favorites');
+                  if (favoritesData) {
+                    setFavorites(JSON.parse(favoritesData));
+                  } else {
+                    setFavorites([]);
+                  }
+                } catch (err) {
+                  setError('Failed to load favorites. Please try again.');
+                } finally {
+                  setIsLoading(false);
+                }
+              };
+              getFavorites();
+            }}
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : isLoading ? (
+        <MovieListSkeleton count={4} />
+      ) : favorites.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIconContainer}>
             <IconSymbol name="heart" size={80} color="#e0e0e0" />
@@ -61,25 +108,20 @@ export default function FavoritesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
   },
   header: {
     paddingTop: 60,
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: '#fff',
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
   },
   headerTitle: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#1a1a1a',
     marginBottom: 4,
   },
   headerSubtitle: {
     fontSize: 16,
-    color: '#666',
   },
   row: {
     justifyContent: 'space-between',
@@ -107,14 +149,44 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 24,
     fontWeight: '600',
-    color: '#1a1a1a',
     marginBottom: 12,
   },
   emptySubtext: {
     fontSize: 16,
-    color: '#666',
     textAlign: 'center',
     lineHeight: 24,
     maxWidth: 300,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    marginTop: 12,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  errorText: {
+    fontSize: 16,
+    marginTop: 16,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
